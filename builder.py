@@ -1,7 +1,6 @@
 import os
 import re
 import io
-import glob
 import shutil
 import subprocess
 from PIL import Image
@@ -16,12 +15,17 @@ def clean_package_name(pkg: str) -> str:
         return f"com.app.{pkg if pkg else 'myapp'}"
     return ".".join(parts)
 
+def run_cmd(cmd, step_name):
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        raise Exception(f"{step_name} এরর: {res.stderr.strip() or res.stdout.strip()}")
+
 def build_apk(work_dir: str, app_name: str, package_name: str, mode: str, target_url: str, html_code: str, logo_bytes: bytes) -> str:
     pkg = clean_package_name(package_name)
     pkg_path = pkg.replace('.', '/')
     
-    # ডিরেক্টরি স্ট্রাকচার তৈরি
     res_dir = os.path.join(work_dir, "res")
+    values_dir = os.path.join(res_dir, "values")
     assets_dir = os.path.join(work_dir, "assets")
     src_dir = os.path.join(work_dir, "src", pkg_path)
     obj_dir = os.path.join(work_dir, "obj")
@@ -36,17 +40,26 @@ def build_apk(work_dir: str, app_name: str, package_name: str, mode: str, target
     
     for d in densities.keys():
         os.makedirs(os.path.join(res_dir, d), exist_ok=True)
+    os.makedirs(values_dir, exist_ok=True)
     os.makedirs(assets_dir, exist_ok=True)
     os.makedirs(src_dir, exist_ok=True)
     os.makedirs(obj_dir, exist_ok=True)
 
-    # ১. লোগো প্রসেসিং (সব সাইজে কনভার্ট)
+    # ১. লোগো রিসাইজ
     img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
     for folder, size in densities.items():
         resized = img.resize(size, Image.Resampling.LANCZOS)
         resized.save(os.path.join(res_dir, folder, "ic_launcher.png"), "PNG")
 
-    # ২. ফুলস্ক্রিন AndroidManifest.xml তৈরি
+    # ২. Strings.xml তৈরি
+    safe_app_name = app_name.replace('"', '\\"').replace("'", "\\'")
+    with open(os.path.join(values_dir, "strings.xml"), "w", encoding="utf-8") as f:
+        f.write(f'''<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">{safe_app_name}</string>
+</resources>''')
+
+    # ৩. Fullscreen AndroidManifest.xml
     manifest_xml = f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{pkg}"
@@ -57,7 +70,7 @@ def build_apk(work_dir: str, app_name: str, package_name: str, mode: str, target
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:label="{app_name}"
+        android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
@@ -71,22 +84,22 @@ def build_apk(work_dir: str, app_name: str, package_name: str, mode: str, target
             </intent-filter>
         </activity>
     </application>
-</manifest>
-'''
+</manifest>'''
+
     manifest_path = os.path.join(work_dir, "AndroidManifest.xml")
     with open(manifest_path, "w", encoding="utf-8") as f:
         f.write(manifest_xml)
 
-    # ৩. URL নাকি HTML লোড করবে তা নির্ধারণ
+    # ৪. URL নাকি HTML লোড করবে
     if mode == "html":
         with open(os.path.join(assets_dir, "index.html"), "w", encoding="utf-8") as f:
-            f.write(html_code or "<h1>App is Ready!</h1>")
+            f.write(html_code or "<h1>App Ready!</h1>")
         load_code = 'myWebView.loadUrl("file:///android_asset/index.html");'
     else:
         url = target_url.strip() if target_url else "https://google.com"
         load_code = f'myWebView.loadUrl("{url}");'
 
-    # ৪. Fullscreen WebView সম্বলিত MainActivity.java তৈরি
+    # ৫. MainActivity.java তৈরি
     main_activity_java = f'''package {pkg};
 
 import android.app.Activity;
@@ -130,53 +143,49 @@ public class MainActivity extends Activity {{
         }}
         return super.onKeyDown(keyCode, event);
     }}
-}}
-'''
+}}'''
     with open(os.path.join(src_dir, "MainActivity.java"), "w", encoding="utf-8") as f:
         f.write(main_activity_java)
 
-    # ৫. বিল্ড পাইপলাইন (aapt2 -> javac -> d8 -> zip -> zipalign -> apksigner)
+    # ৬. কম্পাইল ও সাইন পাইপলাইন
     compiled_res = os.path.join(work_dir, "compiled_res.zip")
     unaligned_apk = os.path.join(work_dir, "unaligned.apk")
     aligned_apk = os.path.join(work_dir, "aligned.apk")
     final_apk = os.path.join(work_dir, "output.apk")
 
-    # (a) রিসোর্স কম্পাইল
-    subprocess.run(["aapt2", "compile", "--dir", res_dir, "-o", compiled_res], check=True)
+    run_cmd(["aapt2", "compile", "--dir", res_dir, "-o", compiled_res], "Resource Compile")
 
-    # (b) রিসোর্স লিঙ্ক
-    subprocess.run([
+    aapt_link_cmd = [
         "aapt2", "link",
         "-I", ANDROID_JAR,
         "--manifest", manifest_path,
         "-o", unaligned_apk,
-        "-A", assets_dir,
+        "--auto-add-overlay",
         compiled_res,
         "--java", os.path.join(work_dir, "src")
-    ], check=True)
+    ]
+    if os.path.exists(assets_dir) and os.listdir(assets_dir):
+        aapt_link_cmd.extend(["-A", assets_dir])
 
-    # (c) জাভা কম্পাইল
+    run_cmd(aapt_link_cmd, "Resource Link")
+
     java_files = [os.path.join(r, f) for r, d, fs in os.walk(os.path.join(work_dir, "src")) for f in fs if f.endswith(".java")]
-    subprocess.run(["javac", "-cp", ANDROID_JAR, "-d", obj_dir] + java_files, check=True)
+    # জাভা ৮ বাইটকোড টার্গেট নিশ্চিত করা
+    run_cmd(["javac", "-source", "8", "-target", "8", "-cp", ANDROID_JAR, "-d", obj_dir] + java_files, "Java Compile")
 
-    # (d) DEX তৈরি
     class_files = [os.path.join(r, f) for r, d, fs in os.walk(obj_dir) for f in fs if f.endswith(".class")]
-    subprocess.run(["d8", "--output", work_dir, "--lib", ANDROID_JAR] + class_files, check=True)
+    run_cmd(["d8", "--output", work_dir, "--lib", ANDROID_JAR] + class_files, "DEX Generation")
 
-    # (e) APK-তে DEX ফাইল ঢোকানো
-    subprocess.run(["zip", "-j", "-u", unaligned_apk, os.path.join(work_dir, "classes.dex")], check=True)
+    run_cmd(["zip", "-j", "-u", unaligned_apk, os.path.join(work_dir, "classes.dex")], "ZIP Dex")
+    run_cmd(["zipalign", "-f", "-p", "4", unaligned_apk, aligned_apk], "Zipalign")
 
-    # (f) Zipalign
-    subprocess.run(["zipalign", "-f", "-p", "4", unaligned_apk, aligned_apk], check=True)
-
-    # (g) APK সাইন করা
-    subprocess.run([
+    run_cmd([
         "apksigner", "sign",
         "--ks", KEYSTORE,
         "--ks-pass", "pass:android",
         "--key-pass", "pass:android",
         "--out", final_apk,
         aligned_apk
-    ], check=True)
+    ], "APK Sign")
 
     return final_apk
