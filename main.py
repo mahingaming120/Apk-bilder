@@ -3,10 +3,20 @@ import shutil
 import tempfile
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from builder import build_apk
 
 app = FastAPI(title="Web to APK Engine")
+
+# ব্রাউজার থেকে যাতে কোনোভাবেই রিকোয়েস্ট ব্লক না হয় (CORS Enable)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def cleanup(folder_path: str):
     shutil.rmtree(folder_path, ignore_errors=True)
@@ -20,16 +30,15 @@ async def generate_apk(
     background_tasks: BackgroundTasks,
     app_name: str = Form(...),
     package_name: str = Form(...),
-    mode: str = Form("url"),  # 'url' অথবা 'html'
+    mode: str = Form("url"),
     target_url: Optional[str] = Form(None),
     html_code: Optional[str] = Form(None),
     logo: UploadFile = File(...)
 ):
+    work_dir = tempfile.mkdtemp(prefix="apk_build_")
     try:
         logo_bytes = await logo.read()
-        work_dir = tempfile.mkdtemp(prefix="apk_build_")
         
-        # APK বিল্ড করা
         apk_path = build_apk(
             work_dir=work_dir,
             app_name=app_name,
@@ -40,7 +49,6 @@ async def generate_apk(
             logo_bytes=logo_bytes
         )
         
-        # ডাউনলোড শেষ হলে ক্যাশ ফোল্ডার ডিলিট করা
         background_tasks.add_task(cleanup, work_dir)
         
         safe_filename = "".join(c for c in app_name if c.isalnum() or c in (' ', '_', '-')).strip()
@@ -53,4 +61,4 @@ async def generate_apk(
         )
     except Exception as e:
         cleanup(work_dir)
-        raise HTTPException(status_code=500, detail=f"Build Failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
