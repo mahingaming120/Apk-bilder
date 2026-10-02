@@ -2,19 +2,27 @@ import os
 import shutil
 import tempfile
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from builder import build_apk
 
 app = FastAPI(title="Web to APK Engine")
 
-# ব্রাউজার থেকে যাতে কোনোভাবেই রিকোয়েস্ট ব্লক না হয় (CORS Enable)
+# ১. শুধুমাত্র আপনার নির্দিষ্ট ওয়েবসাইটকে অনুমতি দেওয়া হলো
+ALLOWED_ORIGINS = [
+    "https://max-apk-bilder.onrender.com",
+    "http://max-apk-bilder.onrender.com"
+]
+
+# ২. সিক্রেট সিকিউরিটি টোকেন
+SECRET_SECURITY_KEY = "MAX_APP_MAHIN_SECRET_2026"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -23,18 +31,32 @@ def cleanup(folder_path: str):
 
 @app.get("/")
 def home():
-    return {"status": "success", "message": "APK Builder Backend is Running Successfully!"}
+    return {"status": "success", "message": "APK Builder Backend is Secured & Running!"}
 
 @app.post("/build")
 async def generate_apk(
+    request: Request,
     background_tasks: BackgroundTasks,
     app_name: str = Form(...),
     package_name: str = Form(...),
     mode: str = Form("url"),
     target_url: Optional[str] = Form(None),
     html_code: Optional[str] = Form(None),
-    logo: UploadFile = File(...)
+    logo: UploadFile = File(...),
+    x_max_auth: Optional[str] = Header(None)
 ):
+    # সিকিউরিটি চেক: রিকোয়েস্ট কি সত্যিই আপনার ডোমেইন থেকে আসছে?
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer", "")
+    
+    is_allowed_domain = (origin in ALLOWED_ORIGINS) or any(referer.startswith(o) for o in ALLOWED_ORIGINS)
+    
+    if not is_allowed_domain or x_max_auth != SECRET_SECURITY_KEY:
+        raise HTTPException(
+            status_code=403, 
+            detail="Access Denied: আপনার ওয়েবসাইট ছাড়া অন্য কোনো ডোমেইন থেকে এই সার্ভার ব্যবহার করা সম্পূর্ণ নিষিদ্ধ!"
+        )
+
     work_dir = tempfile.mkdtemp(prefix="apk_build_")
     try:
         logo_bytes = await logo.read()
