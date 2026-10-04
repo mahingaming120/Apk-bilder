@@ -2,21 +2,18 @@ import os
 import shutil
 import tempfile
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Request, Header
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from builder import build_apk
 
 app = FastAPI(title="Web to APK Engine")
 
-# ১. শুধুমাত্র আপনার নির্দিষ্ট ওয়েবসাইটকে অনুমতি দেওয়া হলো
+# শুধুমাত্র আপনার নতুন ওয়েবসাইটকে অনুমতি দেওয়া হলো
 ALLOWED_ORIGINS = [
-    "https://max-apk-bilder.onrender.com",
-    "http://max-apk-bilder.onrender.com"
+    "https://max-apk-bilder-dev-mahin.onrender.com",
+    "http://max-apk-bilder-dev-mahin.onrender.com"
 ]
-
-# ২. সিক্রেট সিকিউরিটি টোকেন
-SECRET_SECURITY_KEY = "MAX_APP_MAHIN_SECRET_2026"
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,19 +39,17 @@ async def generate_apk(
     mode: str = Form("url"),
     target_url: Optional[str] = Form(None),
     html_code: Optional[str] = Form(None),
-    logo: UploadFile = File(...),
-    x_max_auth: Optional[str] = Header(None)
+    logo: UploadFile = File(...)
 ):
-    # সিকিউরিটি চেক: রিকোয়েস্ট কি সত্যিই আপনার ডোমেইন থেকে আসছে?
+    # ডোমেইন ভেরিফিকেশন
     origin = request.headers.get("origin")
     referer = request.headers.get("referer", "")
     
-    is_allowed_domain = (origin in ALLOWED_ORIGINS) or any(referer.startswith(o) for o in ALLOWED_ORIGINS)
-    
-    if not is_allowed_domain or x_max_auth != SECRET_SECURITY_KEY:
+    is_authorized = (origin in ALLOWED_ORIGINS) or any(referer.startswith(o) for o in ALLOWED_ORIGINS)
+    if not is_authorized:
         raise HTTPException(
             status_code=403, 
-            detail="Access Denied: আপনার ওয়েবসাইট ছাড়া অন্য কোনো ডোমেইন থেকে এই সার্ভার ব্যবহার করা সম্পূর্ণ নিষিদ্ধ!"
+            detail="Access Denied: আপনার ওয়েবসাইট ছাড়া অন্য কোনো ডোমেইন থেকে এই সার্ভার ব্যবহার করা নিষিদ্ধ!"
         )
 
     work_dir = tempfile.mkdtemp(prefix="apk_build_")
