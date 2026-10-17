@@ -9,10 +9,10 @@ from builder import build_apk
 
 app = FastAPI(title="Web to APK Engine")
 
-# শুধুমাত্র আপনার নতুন ওয়েবসাইটকে অনুমতি দেওয়া হলো
+# শুধুমাত্র আপনার নির্দিষ্ট ডোমেইনকে অনুমতি দেওয়া হলো
 ALLOWED_ORIGINS = [
-    "https://max-apk-bilder-dev-mahin.onrender.com",
-    "http://max-apk-bilder-dev-mahin.onrender.com"
+    "https://max-apk-bilder.onrender.com",
+    "http://max-apk-bilder.onrender.com"
 ]
 
 app.add_middleware(
@@ -41,11 +41,16 @@ async def generate_apk(
     html_code: Optional[str] = Form(None),
     logo: UploadFile = File(...)
 ):
-    # ডোমেইন ভেরিফিকেশন
+    # ডোমেইন ভেরিফিকেশন চেক
     origin = request.headers.get("origin")
     referer = request.headers.get("referer", "")
     
-    is_authorized = (origin in ALLOWED_ORIGINS) or any(referer.startswith(o) for o in ALLOWED_ORIGINS)
+    is_authorized = False
+    if origin and origin.rstrip("/") in [o.rstrip("/") for o in ALLOWED_ORIGINS]:
+        is_authorized = True
+    elif any(referer.startswith(o) for o in ALLOWED_ORIGINS):
+        is_authorized = True
+        
     if not is_authorized:
         raise HTTPException(
             status_code=403, 
